@@ -1,6 +1,8 @@
 import random
 import json
 import os
+import json
+import os
 import time
 import astrbot.api.message_components as Comp
 from datetime import datetime
@@ -9,7 +11,6 @@ from astrbot.api.all import *
 PLUGIN_DIR = os.path.join('data','plugins','astrbot_plugin_openweaponscase','data')
 CASES_FILE = os.path.join(PLUGIN_DIR, 'cases.json')
 HISTORY_FILE = os.path.join(PLUGIN_DIR, 'open_history.json')
-
 # 修改后的磨损等级配置（名称, 概率, 最小磨损值, 最大磨损值）
 WEAR_LEVELS = [
     ("崭新出厂", 0.03, 0.00, 0.07),    # 3% 概率
@@ -29,13 +30,15 @@ QUALITY_PROBABILITY = {
     "隐秘": 0.0064,   # 隐秘级
     "非凡": 0.0026    # 金
 }
-@register("CS武器箱开箱模拟", "luooka", "支持当前游戏中绝大多数武器箱,详细使用输入开箱菜单进行查看", "1.0")
+@register("CS武器箱开箱模拟", "luooka", "支持当前游戏中绝大多数武器箱,详细使用输入开箱菜单进行查看", "1.1")
 class CasePlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context,config: dict):
         super().__init__(context)
+        self.config= config
         self.case_data = self._load_cases()
         self.open_history = self._load_history()
-
+        print(self.config)
+        print(self.config.get('number', 10))
     def _load_cases(self):
         """加载并处理武器箱数据"""
         try:
@@ -118,6 +121,7 @@ class CasePlugin(Star):
                     "quality": item["rln"],
                     "wear_value": wear,
                     "wear_level": chosen_level[0],
+                    "template_id": random.randint(0, 999),
                     "img": item.get("img", "")
                 }
         
@@ -156,15 +160,17 @@ class CasePlugin(Star):
         if quality == "隐秘":
             record["red_count"] += 1
             record["items"].append({
-                "name": item["name"],
-                "wear_value": item["wear_value"],
-                "time": datetime.now().isoformat()
-            })
+            "name": item["name"],
+            "wear_value": item["wear_value"],
+            "template_id": item["template_id"],
+            "time": datetime.now().isoformat()
+        })
         elif quality == "非凡":
             record["gold_count"] += 1
             record["items"].append({
                 "name": item["name"],
                 "wear_value": item["wear_value"],
+                "template_id": item["template_id"],
                 "time": datetime.now().isoformat()
             })
         else:
@@ -257,66 +263,65 @@ class CasePlugin(Star):
             Comp.Plain(f"⚡ {nickname} 开启【{case_name}】x{count}\n"),
             Comp.Plain("\n")
         ]
-    
-    
+
         for _ in range(count):
             item = self._generate_item(case_name)
             items_generated.append(item)
             self._record_history(group_id, user_id, item)
             quality = item["quality"]
             quality_stats[quality] += 1
-    
-            # 单开特殊处理
-            if count == 1:
+
+        # 新增品质统计和分段显示逻辑
+        rare_items = []
+        for item in items_generated:
+            if item["quality"] in ["隐秘", "非凡"]:
+                rare_items.append(item)
+        
+
+        if count <= int(self.config.get('number', '10')):
+            # 显示所有物品详情
+            for item in items_generated:
                 if item.get("img"):
                     message_chain.append(Comp.Image.fromURL(item["img"]))
                 message_chain.extend([
                     Comp.Plain(f"🎁 获得物品：{item['name']}\n"),
                     Comp.Plain(f"✦ 品质：{item['quality']}\n"),
-                    Comp.Plain(f"🔧 磨损：{item['wear_level']} ({item['wear_value']:.8f})\n")
+                    Comp.Plain(f"🔧 磨损：{item['wear_level']} ({item['wear_value']:.8f}) | 模板编号: {item['template_id']}\n")
                 ])
-        
-        # 批量开箱处理
-        if count > 1:
-            # 普通物品统计
-            normal_stats = {k:v for k,v in quality_stats.items() if k not in ["隐秘", "非凡"]}
-            message_chain.append(Comp.Plain("\n"))
-            message_chain.append(Comp.Plain("✦ 普通物品统计：\n"))
-            message_chain.extend([
-                Comp.Plain(f"· {k}: {v}件\n") 
-                for k, v in normal_stats.items() if v > 0
-            ])
+        else:
+            # 超过阈值时显示统计和稀有物品
+            message_chain.append(Comp.Plain(f"✦ 普通物品统计：\n"))
+            for q in ["军规级", "受限", "保密"]:
+                if quality_stats[q] > 0:
+                    message_chain.append(Comp.Plain(f"· {q}: {quality_stats[q]}件\n"))
             
-            # 稀有物品处理
-            rare_items = [i for i in items_generated if i["quality"] in ["隐秘", "非凡"]]
             if rare_items:
                 message_chain.append(Comp.Plain("\n💎 稀有物品清单：\n"))
-                for item in rare_items[:20]:  # 最多显示20个
+                for item in rare_items[:20]:
                     components = []
                     if item.get("img"):
                         components.append(Comp.Image.fromURL(item["img"]))
                     components.append(Comp.Plain(
-                        f"▫ {item['name']} | 磨损:{item['wear_value']:.8f}\n"
+                        f"▫ {item['name']} | 磨损:{item['wear_value']:.8f} | 模板编号: {item['template_id']}\n"
                     ))
                     message_chain.extend(components)
-    
+        
         # 添加库存信息
         history_key = f"{group_id}-{user_id}"
         message_chain.append(Comp.Plain(
             f"\n📦 当前库存：{self.open_history[history_key]['total']}件"
         ))
         yield event.chain_result(message_chain)
-
     async def _show_inventory(self, event: AstrMessageEvent):
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
         history_key = f"{group_id}-{user_id}"
         inventory = self.open_history.get(history_key, {})
-        
+
         if not inventory.get("total"):
             yield event.plain_result("📭 库存空空如也")
             return
-    
+
         # 构建统计信息
         result = [
             f"📦 总库存：{inventory['total']}件",
@@ -324,29 +329,17 @@ class CasePlugin(Star):
             "✦ 普通物品统计：",
             *[f"· {k}: {v}件" for k, v in inventory['other_stats'].items()]
         ]
-        
+
         # 隐秘物品展示
         if inventory["red_count"] > 0:
-            red_items = inventory["items"][:5] if inventory["red_count"] > 5 else inventory["items"]
+            red_items = inventory["items"][:50] if inventory["red_count"] > 5 else inventory["items"]
             result.extend([
                 "",
                 "🔴 隐秘级物品：",
-                *[f"▫ {item['name']} | 磨损:{item['wear_value']:.8f}" for item in red_items]
+                *[f"▫ {item['name']} | 磨损:{item['wear_value']:.8f} | 模板编号: {item['template_id']}" for item in red_items]
             ])
-            if inventory["red_count"] > 5:
+            if inventory["red_count"] > 50:
                 result.append(f"...等{inventory['red_count']}件隐秘级物品")
-        
-        # 非凡物品展示
-        if inventory["gold_count"] > 0:
-            gold_items = inventory["items"][-5:] if inventory["gold_count"] > 5 else inventory["items"]
-            result.extend([
-                "",
-                "🌟 罕见级物品：",
-                *[f"▫ {item['name']} | 磨损:{item['wear_value']:.8f}" for item in gold_items]
-            ])
-            if inventory["gold_count"] > 5:
-                result.append(f"...等{inventory['gold_count']}件罕见级物品")
-        
         result.append(f"\n⏰ 最后开箱：{datetime.fromtimestamp(inventory['last_open']).strftime('%m-%d %H:%M')}")
         yield event.plain_result("\n".join(result))
     

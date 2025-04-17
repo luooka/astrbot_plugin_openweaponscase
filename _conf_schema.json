@@ -1,0 +1,7 @@
+{
+    "number": {
+        "description": "批量开箱显示上限数(默认为10)",
+        "type": "int",
+        "hint": "请输入数量"
+    }
+}

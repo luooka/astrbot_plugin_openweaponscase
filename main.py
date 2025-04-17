@@ -336,7 +336,7 @@ class CasePlugin(Star):
             result.extend([
                 "",
                 "🔴 隐秘级物品：",
-                *[f"▫ {item['name']} | 磨损:{item['wear_value']:.8f} | 模板编号: {item['template_id']}" for item in red_items]
+                *[f"▫ {item['name']} | 磨损:{item['wear_value']:.8f} | 模板编号: {item.get('template_id', '0')}" for item in red_items]
             ])
             if inventory["red_count"] > 50:
                 result.append(f"...等{inventory['red_count']}件隐秘级物品")

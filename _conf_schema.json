@@ -1,7 +1,26 @@
 {
     "number": {
-        "description": "批量开箱显示上限数(默认为10)",
         "type": "int",
-        "hint": "请输入数量"
+        "title": "显示上限",
+        "description": "批量开箱显示上限数(默认为10)",
+        "default": 10
+    },
+    "api_host": {
+        "type": "string",
+        "title": "API 域名",
+        "description": "API请求地址 (无需加https://)",
+        "default": "api.csqaq.com"
+    },
+    "api_token": {
+        "type": "string",
+        "title": "API Token",
+        "description": "API认证Token",
+        "default": ""
+    },
+    "admins": {
+        "type": "string",
+        "title": "管理员QQ",
+        "description": "管理员QQ号，多个QQ请用逗号分隔",
+        "default": ""
     }
 }

@@ -2,8 +2,6 @@ import random
 import json
 import re
 import os
-import json
-import os
 import time
 import asyncio
 import hashlib
@@ -16,7 +14,6 @@ from urllib.parse import quote
 from datetime import datetime
 from astrbot.api.all import *
 
-PLUGIN_DIR = os.path.join('data','plugins','astrbot_plugin_openweaponscase','data')
 # === 引入图像处理库 ===
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -27,7 +24,6 @@ PLUGIN_DIR = os.path.join('data', 'plugins', 'astrbot_plugin_openweaponscase', '
 CASES_FILE = os.path.join(PLUGIN_DIR, 'cases.json')
 IMAGES_MAP_FILE = os.path.join(PLUGIN_DIR, 'case_images.json')
 HISTORY_FILE = os.path.join(PLUGIN_DIR, 'open_history.json')
-# 修改后的磨损等级配置（名称, 概率, 最小磨损值, 最大磨损值）
 IMAGES_DIR = os.path.join(PLUGIN_DIR, 'images')
 
 # ================= 配置区域 =================
@@ -44,11 +40,6 @@ QUALITY_COLORS = {
 }
 
 WEAR_LEVELS = [
-    ("崭新出厂", 0.03, 0.00, 0.07),    # 3% 概率
-    ("略有磨损", 0.24, 0.07, 0.15),   # 24% 概率
-    ("久经沙场", 0.33, 0.15, 0.45),   # 33% 概率
-    ("破损不堪", 0.24, 0.30, 0.45),   # 24% 概率
-    ("战痕累累", 0.16, 0.45, 1.00)    # 16% 概率
     ("崭新出厂", 0.03, 0.00, 0.07),
     ("略有磨损", 0.24, 0.07, 0.15),
     ("久经沙场", 0.33, 0.15, 0.45),
@@ -57,23 +48,13 @@ WEAR_LEVELS = [
 ]
 
 DOPPLER_WEAR_LEVELS = [
-    ("崭新出厂", 0.03, 0.00, 0.87),    # 3% 概率
-    ("略有磨损", 0.24, 0.07, 0.12),   # 24% 概率
     ("崭新出厂", 0.03, 0.00, 0.87),
     ("略有磨损", 0.24, 0.07, 0.12),
 ]
-QUALITY_PROBABILITY = {
-    "军规级": 0.7992,  # 军规级
-    "受限": 0.1598,   # 受限级
-    "保密": 0.032,    # 保密级
-    "隐秘": 0.0064,   # 隐秘级
-    "非凡": 0.0026    # 金
-}
 
 CASE_PROBABILITY = {
     "军规级": 0.7992, "受限": 0.1598, "保密": 0.032, "隐秘": 0.0064, "非凡": 0.0026
 }
-@register("CS武器箱开箱模拟", "luooka", "支持当前游戏中绝大多数武器箱,详细使用输入开箱菜单进行查看", "1.1")
 
 MAP_DROP_PROBABILITY = {
     "消费级": 0.80, "工业级": 0.16, "军规级": 0.032, "受限": 0.0064, "保密": 0.0016, "隐秘": 0.0004
@@ -247,16 +228,14 @@ class GifGenerator:
             frames[0].save(output, format="GIF", save_all=True, append_images=frames[1:], duration=int(1000/fps), loop=0, optimize=False)
         return output.getvalue()
 
-@register("CS武器箱开箱模拟", "luooka", "支持武器箱、纪念包、收藏品开箱模拟(带动画)", "2.8")
+@register("CS武器箱开箱模拟", "luooka", "支持武器箱、纪念包、收藏品开箱模拟(带动画)", "1.2")
 class CasePlugin(Star):
-    def __init__(self, context: Context,config: dict):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
-        self.config= config
         self.config = config
         
         self.api_host = self.config.get('api_host', 'api.csqaq.com').replace("https://", "").replace("http://", "").strip("/")
-        self.api_token = self.config.get('api_token', 'GWBR21M7K474Z3R5Y5H8K9J6')
+        self.api_token = self.config.get('api_token')
         
         self.net_mgr = NetworkManager(self.api_token) 
         self.img_mgr = ImageManager()
@@ -265,11 +244,9 @@ class CasePlugin(Star):
         self.case_data = self._load_cases()
         self.case_images = self._load_case_images()
         self.open_history = self._load_history()
-        print(self.config)
-        print(self.config.get('number', 10))
         
         # === 核心修改：解析管理员配置 (String -> List) ===
-        raw_admins = self.config.get("admins", "510591108")
+        raw_admins = self.config.get("admins")
         if isinstance(raw_admins, list):
             # 兼容旧配置
             self.admins = [str(x) for x in raw_admins]
@@ -280,26 +257,16 @@ class CasePlugin(Star):
         print(f"插件加载完成。Config: Number={self.config.get('number', 10)}, Admins={self.admins}")
 
     def _load_cases(self):
-        """加载并处理武器箱数据"""
         try:
-            os.makedirs('data', exist_ok=True)
             os.makedirs(PLUGIN_DIR, exist_ok=True)
             if not os.path.exists(CASES_FILE):
-                with open(CASES_FILE, 'w', encoding='utf-8') as f:
-                    json.dump({}, f, ensure_ascii=False)
-            
                 with open(CASES_FILE, 'w', encoding='utf-8') as f: json.dump({}, f)
             with open(CASES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                self._process_cases(data)
                 self._recalculate_probabilities(data)
                 return data
-        except Exception as e:
-            raise PluginLoadError(f"数据加载失败: {str(e)}")
         except: return {}
 
-    def _process_cases(self, data):
-        """处理每个武器箱的概率分配"""
     def _load_case_images(self):
         try:
             if not os.path.exists(IMAGES_MAP_FILE): return {}
@@ -321,41 +288,24 @@ class CasePlugin(Star):
             ctype = self._identify_container_type(case_name)
             prob_table = self._get_prob_table(ctype)
             quality_counts = {}
-            # 统计各品质物品数量
             for item in items:
-                quality = item["rln"]
-                quality_counts[quality] = quality_counts.get(quality, 0) + 1
-            
-            # 分配概率并添加probability字段
                 q = item["rln"]
                 if q in prob_table: quality_counts[q] = quality_counts.get(q, 0) + 1
             for item in items:
-                quality = item["rln"]
-                total_prob = QUALITY_PROBABILITY.get(quality, 0)
-                count = quality_counts.get(quality, 1)
-                item["probability"] = total_prob / count
                 q = item["rln"]
                 if q in prob_table:
                     item["probability"] = prob_table[q] / quality_counts.get(q, 1)
                 else: item["probability"] = 0
 
     def _load_history(self):
-        """加载开箱历史记录"""
-        if not os.path.exists(HISTORY_FILE):
-            return {}
-        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
         if not os.path.exists(HISTORY_FILE): return {}
         with open(HISTORY_FILE, 'r', encoding='utf-8') as f: return json.load(f)
 
     def _save_history(self):
-        """保存开箱记录"""
         with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.open_history, f, indent=2, ensure_ascii=False)
 
     def _generate_item(self, case_name):
-        """生成带磨损值的物品（包含概率范围）"""
-        items = self.case_data[case_name]
         items = self.case_data.get(case_name, [])
         valid_items = [i for i in items if i.get("probability", 0) > 0]
         if not valid_items: return {"name": "错误", "quality": "军规级", "wear_value": 0, "wear_level": "无", "img": "", "rln": "军规级", "short_name": "错误"}
@@ -365,49 +315,12 @@ class CasePlugin(Star):
         cumulative = 0.0
         selected_item = valid_items[-1]
         
-        # 先选择物品品质
-        for item in items:
         for item in valid_items:
             cumulative += item["probability"]
             if rand <= cumulative:
-                # ===== 新增StatTrak判断 =====
-                is_stattrak = False
-                item_name = item["short_name"]
-                # 排除手套类物品的StatTrak判断
-                if "手套" not in item_name:
-                    # 10%概率生成StatTrak
-                    is_stattrak = random.random() < 0.1
-                    # 处理物品名称
-                    if is_stattrak:
-                        item_name = f"StatTrak™ | {item_name}"
-                # 根据概率分布选择磨损等级
-                is_doppler = "多普勒" in item_name
-                wear_config = DOPPLER_WEAR_LEVELS if is_doppler else WEAR_LEVELS                           
-                # 根据配置选择磨损等级
-                chosen_level = random.choices(
-                    wear_config,
-                    weights=[wl[1] for wl in wear_config],
-                    k=1
-                )[0]                
-                # 在选定等级范围内生成磨损值
-                wear_min = chosen_level[2]
-                wear_max = chosen_level[3]
-                wear = round(random.uniform(wear_min, wear_max), 8)
-                
-                return {
-                    "name": item_name,
-                    "quality": item["rln"],
-                    "wear_value": wear,
-                    "wear_level": chosen_level[0],
-                    "template_id": random.randint(0, 999),
-                    "img": item.get("img", "")
-                }
                 selected_item = item
                 break
         
-        # 兜底逻辑（理论上不会执行到这里）
-        last_item = items[-1]
-        wear = round(random.uniform(0, 1), 8)
         raw_name = selected_item["short_name"]
         item_name = raw_name
         quality = selected_item["rln"]
@@ -432,11 +345,6 @@ class CasePlugin(Star):
         is_rare = quality in ["隐秘", "非凡", "Contraband"]
 
         return {
-            "name": last_item["short_name"],
-            "quality": last_item["rln"],
-            "wear_value": wear,
-            "wear_level": "战痕累累",
-            "img": last_item.get("img", "")
             "name": item_name,
             "raw_name": raw_name,
             "quality": quality,
@@ -449,43 +357,10 @@ class CasePlugin(Star):
         }
 
     def _record_history(self, group_id, user_id, item):
-        """优化后的记录逻辑 只详细记录红/金物品"""
         history_key = f"{group_id}-{user_id}"
-        self.open_history.setdefault(history_key, {
-            "total": 0,
-            "red_count": 0,       # 隐秘物品总数
-            "gold_count": 0,      # 非凡物品总数
-            "other_stats": {      # 其他品质统计
-                "军规级": 0,
-                "受限": 0,
-                "保密": 0
-            },
-            "items": [],          # 仅存储红/金物品详情
-            "last_open": None
-        })
-        
         self.open_history.setdefault(history_key, {"total": 0, "red_count": 0, "gold_count": 0, "other_stats": {}, "items": [], "last_open": None})
         record = self.open_history[history_key]
         record["total"] += 1
-        
-        # 分类存储逻辑
-        quality = item["quality"]
-        if quality == "隐秘":
-            record["red_count"] += 1
-            record["items"].append({
-            "name": item["name"],
-            "wear_value": item["wear_value"],
-            "template_id": item["template_id"],
-            "time": datetime.now().isoformat()
-        })
-        elif quality == "非凡":
-            record["gold_count"] += 1
-            record["items"].append({
-                "name": item["name"],
-                "wear_value": item["wear_value"],
-                "template_id": item["template_id"],
-                "time": datetime.now().isoformat()
-            })
         record["last_open"] = time.time()
         q = item["quality"]
         if item.get("is_special", False) or q in ["隐秘", "非凡"]:
@@ -493,42 +368,11 @@ class CasePlugin(Star):
             elif q == "隐秘": record["red_count"] += 1
             record["items"].append({"name": item["name"], "wear_value": item["wear_value"], "time": datetime.now().isoformat()})
         else:
-            if quality in record["other_stats"]:
-                record["other_stats"][quality] += 1
-        
-        record["last_open"] = time.time()
             record["other_stats"][q] = record["other_stats"].get(q, 0) + 1
         self._save_history()
 
     def _parse_command(self, msg: str) -> tuple:
-        """
-        解析开箱指令格式：
-        支持格式：
-        1. 开箱[武器箱名称][次数] 示例：开箱狂牙武器箱10
-        2. 开箱[次数][空格][武器箱名称] 示例：开箱10 狂牙武器箱
-        3. 开箱[武器箱名称]（默认开1箱）示例：开箱变革武器箱
-        """
         clean_msg = msg.replace("开箱", "", 1).strip()
-        if not clean_msg:
-            return None, 1
-        
-        if ' ' in clean_msg:
-            parts = clean_msg.split(maxsplit=1)
-            if parts[0].isdigit():
-                return parts[1], min(int(parts[0]), 1000)
-            elif len(parts) > 1 and parts[1].isdigit():
-                return parts[0], min(int(parts[1]), 1000)
-        
-        count_str = ""
-        index = len(clean_msg) - 1
-        while index >= 0 and clean_msg[index].isdigit():
-            count_str = clean_msg[index] + count_str
-            index -= 1
-        
-        if count_str:
-            return clean_msg[:index+1].strip(), min(int(count_str), 1000)
-        else:
-            return clean_msg, 1
         if not clean_msg: return None, 1
         parts = clean_msg.split(maxsplit=1)
         if len(parts) > 1 and parts[0].isdigit(): return parts[1], min(int(parts[0]), 200)
@@ -542,10 +386,7 @@ class CasePlugin(Star):
     @event_message_type(EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
         msg = event.message_str.strip()
-        
         if msg == "清除库存":
-            async for result in self._handle_purge(event):
-                yield result
             async for r in self._handle_purge(event): yield r
         elif msg == "更新武器箱":
             sender_id = str(event.get_sender_id())
@@ -555,35 +396,18 @@ class CasePlugin(Star):
             else:
                 yield event.plain_result(f"❌ 权限不足：仅管理员可更新数据。")
         elif msg == "开箱菜单":
-            async for result in self._show_menu(event):
-                yield result
             async for r in self._show_menu(event): yield r
         elif msg == "武器箱列表":
             async for r in self._handle_show_list(event): yield r
         elif msg == "库存":
-            async for result in self._show_inventory(event):
-                yield result
             async for r in self._show_inventory(event): yield r
         elif msg.startswith("开箱"):
-            async for result in self._handle_open(event):
-                yield result
             async for r in self._handle_open(event): yield r
         elif msg.startswith("查询价格"):
             async for r in self._handle_price_query(event): yield r
         elif msg.startswith("挂刀排行"):
             async for r in self._handle_market_ratio(event): yield r
 
-    async def _handle_purge(self, event: AstrMessageEvent):
-        """处理清除库存"""
-        group_id = str(event.message_obj.group_id)
-        user_id = str(event.get_sender_id())
-        history_key = f"{group_id}-{user_id}"
-        if history_key in self.open_history:
-            del self.open_history[history_key]
-            self._save_history()
-            yield event.plain_result("✅ 库存已清空")
-        else:
-            yield event.plain_result("❌ 没有可清除的库存")
     async def _handle_update_cases(self, event: AstrMessageEvent):
         yield event.plain_result("⏳ 开始同步数据 (限制频率 1.5s/次)...")
         
@@ -663,17 +487,12 @@ class CasePlugin(Star):
         yield event.plain_result(f"📦 武器箱 ({len(cases)}):\n{fmt(cases)}\n\n🎁 纪念包 ({len(souvenirs)}):\n{fmt(souvenirs)}\n\n🖼️ 收藏品 ({len(collections)}):\n{fmt(collections)}")
 
     async def _handle_open(self, event: AstrMessageEvent):
-        """处理开箱请求"""
         msg = event.message_str.strip()
         case_name, count = self._parse_command(msg)
-        
         if not case_name:
-            yield event.plain_result("❌ 请输入武器箱名称")
             yield event.plain_result("❌ 请输入名称")
             return
         
-        if case_name not in self.case_data:
-            yield event.plain_result(f"❌ 未找到【{case_name}】武器箱")
         target_case = None
         if case_name in self.case_data: target_case = case_name
         else:
@@ -684,36 +503,16 @@ class CasePlugin(Star):
         if not target_case:
             yield event.plain_result(f"❌ 未找到【{case_name}】")
             return
-        
 
         user_id = str(event.get_sender_id())
         group_id = str(event.message_obj.group_id)
-        user_id = str(event.get_sender_id())
-        nickname = event.get_sender_name()
         
-        items_generated = []
-        quality_stats = {"军规级":0, "受限":0, "保密":0, "隐秘":0, "非凡":0}
-        message_chain = [
-            Comp.At(qq=event.get_sender_id()),
-            Comp.Plain(f"⚡ {nickname} 开启【{case_name}】x{count}\n"),
-            Comp.Plain("\n")
-        ]
-
         items_res = []
         for _ in range(count):
-            item = self._generate_item(case_name)
-            items_generated.append(item)
             item = self._generate_item(target_case)
             items_res.append(item)
             self._record_history(group_id, user_id, item)
-            quality = item["quality"]
-            quality_stats[quality] += 1
 
-        # 新增品质统计和分段显示逻辑
-        rare_items = []
-        for item in items_generated:
-            if item["quality"] in ["隐秘", "非凡"]:
-                rare_items.append(item)
         chain = [Comp.At(qq=user_id)]
         
         if count == 1:
@@ -736,49 +535,11 @@ class CasePlugin(Star):
                 print(f"GIF生成失败: {e}")
                 if winner.get("img"): chain.append(Comp.Image.fromURL(winner["img"]))
 
-        if count <= int(self.config.get('number', '10')):
-            # 显示所有物品详情
-            for item in items_generated:
-                if item.get("img"):
-                    message_chain.append(Comp.Image.fromURL(item["img"]))
-                message_chain.extend([
-                    Comp.Plain(f"🎁 获得物品：{item['name']}\n"),
-                    Comp.Plain(f"✦ 品质：{item['quality']}\n"),
-                    Comp.Plain(f"🔧 磨损：{item['wear_level']} ({item['wear_value']:.8f}) | 模板编号: {item['template_id']}\n")
-                ])
             ctype = self._identify_container_type(target_case)
             info = f"\n🎁 {winner['name']} ({winner['quality']})\n"
             if ctype != "capsule": info += f"🔧 {winner['wear_level']} ({winner['wear_value']:.5f})"
             chain.append(Comp.Plain(info))
         else:
-            # 超过阈值时显示统计和稀有物品
-            message_chain.append(Comp.Plain(f"✦ 普通物品统计：\n"))
-            for q in ["军规级", "受限", "保密"]:
-                if quality_stats[q] > 0:
-                    message_chain.append(Comp.Plain(f"· {q}: {quality_stats[q]}件\n"))
-            
-            if rare_items:
-                message_chain.append(Comp.Plain("\n💎 稀有物品清单：\n"))
-                for item in rare_items[:20]:
-                    components = []
-                    if item.get("img"):
-                        components.append(Comp.Image.fromURL(item["img"]))
-                    components.append(Comp.Plain(
-                        f"▫ {item['name']} | 磨损:{item['wear_value']:.8f} | 模板编号: {item['template_id']}\n"
-                    ))
-                    message_chain.extend(components)
-        
-        # 添加库存信息
-        history_key = f"{group_id}-{user_id}"
-        message_chain.append(Comp.Plain(
-            f"\n📦 当前库存：{self.open_history[history_key]['total']}件"
-        ))
-        yield event.chain_result(message_chain)
-    async def _show_inventory(self, event: AstrMessageEvent):
-        group_id = str(event.message_obj.group_id)
-        user_id = str(event.get_sender_id())
-        history_key = f"{group_id}-{user_id}"
-        inventory = self.open_history.get(history_key, {})
             chain.append(Comp.Plain(f" ⚡ 开启【{target_case}】x{count}\n"))
             if count <= 10:
                 for item in items_res:
@@ -804,8 +565,6 @@ class CasePlugin(Star):
                         if ctype != "capsule":
                             chain.append(Comp.Plain(f"   🔧 {item['wear_level']} ({item['wear_value']:.5f})\n"))
 
-        if not inventory.get("total"):
-            yield event.plain_result("📭 库存空空如也")
         chain.append(Comp.Plain(f"\n📦 总库存: {self.open_history[f'{group_id}-{user_id}']['total']}"))
         yield event.chain_result(chain)
 
@@ -830,59 +589,12 @@ class CasePlugin(Star):
             for i in inv['items'][-10:]: msg.append(f"▫ {i['name']}")
         yield event.plain_result("\n".join(msg))
 
-        # 构建统计信息
-        result = [
-            f"📦 总库存：{inventory['total']}件",
-            "▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            "✦ 普通物品统计：",
-            *[f"· {k}: {v}件" for k, v in inventory['other_stats'].items()]
-        ]
     async def _show_menu(self, event):
         yield event.plain_result("🔫 CS开箱模拟 2.8\n▬▬▬▬▬▬▬▬\n开箱 [数量] [名称]\n更新武器箱 | 武器箱列表\n库存 | 清除库存\n查询价格 [名] | 挂刀排行")
 
-        # 隐秘物品展示
-        if inventory["red_count"] > 0:
-            red_items = inventory["items"][:50] if inventory["red_count"] > 5 else inventory["items"]
-            result.extend([
-                "",
-                "🔴 隐秘级物品：",
-                *[f"▫ {item['name']} | 磨损:{item['wear_value']:.8f} | 模板编号: {item['template_id']}" for item in red_items]
-            ])
-            if inventory["red_count"] > 50:
-                result.append(f"...等{inventory['red_count']}件隐秘级物品")
-        result.append(f"\n⏰ 最后开箱：{datetime.fromtimestamp(inventory['last_open']).strftime('%m-%d %H:%M')}")
-        yield event.plain_result("\n".join(result))
     def _http_request(self, path, method="GET"):
         return self.net_mgr.request(f"https://{self.api_host}{path}", method=method)
-
-
-
-
-
-
-
-
-
-
     
-    async def _show_menu(self, event: AstrMessageEvent):
-        """显示帮助菜单"""
-        menu = [
-            "🔫 CSGO开箱系统菜单",
-            "▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            "✦ 单次开箱：开箱[武器箱名称]",
-            "  示例：开箱梦魇武器箱",
-            "",
-            "✦ 批量开箱：开箱[次数][空格][武器箱名称] 或 开箱[武器箱名称][次数]",
-            "  示例：开箱10 开箱梦魇武器箱 或 开箱梦魇武器箱10",
-            "",
-            "✦ 库存查询：库存",
-            "✦ 清除数据：清除库存",
-            "",
-            "👜 可用武器箱列表：",
-            *[f"▫ {name}" for name in self.case_data]
-        ]
-        yield event.plain_result("\n".join(menu))
     def search_items(self, keyword):
         d = self._http_request(f"/api/v1/search/suggest?text={quote(keyword)}")
         return d.get('data', []) if d and d.get('code')==200 else None

@@ -568,7 +568,7 @@ class GifGenerator:
         
         # 标题
         draw.text((20, 20), "🔫 CS2 开箱模拟", fill=(255, 215, 0), font=self.font_title)
-        draw.text((20, 60), "v1.2", fill=(150, 150, 150), font=self.font)
+        draw.text((20, 60), "v1.3", fill=(150, 150, 150), font=self.font)
         
         # 分割线
         draw.line([(20, 90), (width-20, 90)], fill=(60, 60, 60), width=2)

@@ -53,7 +53,8 @@
 
 * **单抽动画**：
     > (此处为生成的 GIF，带有滚动条、指针和最终物品展示)
-    ![temp_510591108](https://github.com/user-attachments/assets/60caaaf5-dc13-47a1-93a1-ffb3bdcc9909)
+![temp_rare_510591108](https://github.com/user-attachments/assets/1e3250c8-255a-410b-84b5-12ef55c62fd9)
+
 
 * **价格查询**：
     > [图片]

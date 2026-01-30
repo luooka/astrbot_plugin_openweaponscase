@@ -596,7 +596,7 @@ class GifGenerator:
         img.save(output, format="PNG")
         return output.getvalue()
 
-@register("CS武器箱开箱模拟", "luooka", "支持武器箱、纪念包、收藏品开箱模拟(带动画)", "1.2")
+@register("CS武器箱开箱模拟", "luooka", "支持武器箱、纪念包、收藏品开箱模拟(带动画)", "1.3")
 class CasePlugin(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)

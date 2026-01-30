@@ -2,6 +2,6 @@ name: astrbot_plugin_openweaponscase
 display_name: cs2开箱模拟
 desc: 用于astrbot，使用开箱指令来进行模拟cs开箱,支持批量开箱返回开启物品图片和磨损,支持价格查询
 help: 输入开箱菜单查看指南
-version: v1.2
+version: v1.3
 author: luooka
 repo: https://github.com/luooka/astrbot_plugin_openweaponscase

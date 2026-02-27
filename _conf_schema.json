@@ -1,26 +1,50 @@
 {
-    "number": {
-        "type": "int",
-        "title": "显示上限",
-        "description": "批量开箱显示上限数(默认为10)",
-        "default": 10
-    },
-    "api_host": {
-        "type": "string",
-        "title": "API 域名",
-        "description": "API请求地址 (无需加https://)",
-        "default": "api.csqaq.com"
-    },
-    "api_token": {
-        "type": "string",
-        "title": "API Token",
-        "description": "API认证Token",
-        "default": ""
-    },
-    "admins": {
-        "type": "string",
-        "title": "管理员QQ",
-        "description": "管理员QQ号，多个QQ请用逗号分隔",
-        "default": ""
-    }
+  "number": {
+    "type": "int",
+    "description": "显示上限",
+    "hint": "批量开箱时展示结果的上限数量（默认 10）",
+    "default": 10
+  },
+  "max_open_per_request": {
+    "type": "int",
+    "description": "单次开箱上限",
+    "hint": "每次命令最多允许开箱数量（默认 50）",
+    "default": 50
+  },
+  "max_open_per_day": {
+    "type": "int",
+    "description": "每日开箱上限",
+    "hint": "每位用户每天最多可开箱数量，0 表示不限制（默认 500）",
+    "default": 500
+  },
+  "daily_reset_time": {
+    "type": "string",
+    "description": "每日重置时间",
+    "hint": "按系统本地时间重置每日开箱额度，格式 HH:MM（默认 04:00）",
+    "default": "04:00"
+  },
+  "cache_retention_days": {
+    "type": "int",
+    "description": "自动缓存清理",
+    "hint": "自动清理本地图片缓存的保留天数，0 表示不清理",
+    "default": 0
+  },
+  "api_host": {
+    "type": "string",
+    "description": "API 域名",
+    "hint": "API 请求域名（无需包含 https://）",
+    "default": "api.csqaq.com"
+  },
+  "api_token": {
+    "type": "string",
+    "description": "API Token",
+    "hint": "API 认证 Token",
+    "default": ""
+  },
+  "admins": {
+    "type": "string",
+    "description": "管理员QQ",
+    "hint": "多个 QQ 请用英文逗号分隔",
+    "default": ""
+  }
 }

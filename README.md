@@ -16,6 +16,10 @@
 | 字段名 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `number` | int | `10` | 批量开箱显示的上限数（超过此数量将只显示统计文本，不发图片）。 |
+| `max_open_per_request` | int | `50` | 单次开箱上限，超过则直接拒绝并提示。 |
+| `max_open_per_day` | int | `500` | 每日开箱上限（0 表示不限制）。 |
+| `daily_reset_time` | string | `04:00` | 每日额度刷新时间（本地时间，格式 HH:MM）。 |
+| `cache_retention_days` | int | `0` | 图片缓存保留天数（0 表示不清理，仅清理 `images/` 缓存）。 |
 | `api_host` | string | `api.csqaq.com` | 数据源 API 域名（无需加 https://）。 |
 | `api_token` | string | 用来管理价格查询和库存更新使用 | API 认证 Token **(必填，获取方法见下文)**。 |
 | `admins` | string | 武器箱更新权限 | **管理员 QQ 号**。多个管理员请用英文逗号分隔，例如 `12345,67890`。 |

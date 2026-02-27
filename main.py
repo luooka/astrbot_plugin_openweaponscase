@@ -1,4 +1,4 @@
-import random
+﻿import random
 import json
 import re
 import os
@@ -14,7 +14,7 @@ from io import BytesIO
 from functools import lru_cache
 import astrbot.api.message_components as Comp
 from urllib.parse import quote
-from datetime import datetime
+from datetime import datetime, timedelta
 from astrbot.api.all import *
 
 # === 引入图像处理库 ===
@@ -99,9 +99,25 @@ class NetworkManager:
 
 # ================= 辅助类：图片管理 =================
 class ImageManager:
-    def __init__(self):
+    def __init__(self, retention_days: int = 0):
         os.makedirs(IMAGES_DIR, exist_ok=True)
         self.ssl_context = ssl._create_unverified_context()
+        self._cleanup_cache(retention_days)
+
+    def _cleanup_cache(self, retention_days: int):
+        if retention_days <= 0:
+            return
+        cutoff = time.time() - (retention_days * 86400)
+        try:
+            for name in os.listdir(IMAGES_DIR):
+                path = os.path.join(IMAGES_DIR, name)
+                try:
+                    if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                        os.remove(path)
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
     def _get_file_path(self, url):
         hash_name = hashlib.md5(url.encode()).hexdigest()
@@ -190,8 +206,75 @@ class DatabaseManager:
                         FOREIGN KEY(container_name) REFERENCES containers(name)
                     )''')
         c.execute('''CREATE INDEX IF NOT EXISTS idx_container ON items (container_name)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS open_limit_state (
+                        user_key TEXT NOT NULL,
+                        period_key TEXT NOT NULL,
+                        opened_count INTEGER NOT NULL DEFAULT 0,
+                        last_open_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (user_key, period_key)
+                    )''')
+        c.execute('''CREATE INDEX IF NOT EXISTS idx_open_limit_user_period ON open_limit_state (user_key, period_key)''')
         conn.commit()
         conn.close()
+
+    def consume_daily_quota(self, user_key, period_key, request_count, daily_limit, now_text):
+        """
+        每日额度检查区域
+        返回: (allowed_count, used_today, remaining_today)
+        """
+        if request_count <= 0:
+            if daily_limit > 0:
+                return 0, 0, daily_limit
+            return 0, 0, -1
+
+        conn = self._get_conn()
+        c = conn.cursor()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                "SELECT opened_count FROM open_limit_state WHERE user_key=? AND period_key=?",
+                (user_key, period_key),
+            )
+            row = c.fetchone()
+            used_today = int(row[0]) if row else 0
+
+            if daily_limit > 0:
+                remaining = max(0, daily_limit - used_today)
+                allowed_count = min(request_count, remaining)
+            else:
+                allowed_count = request_count
+
+            new_used = used_today + allowed_count
+            if row:
+                c.execute(
+                    """
+                    UPDATE open_limit_state
+                    SET opened_count=?, last_open_at=?, updated_at=?
+                    WHERE user_key=? AND period_key=?
+                    """,
+                    (new_used, now_text, now_text, user_key, period_key),
+                )
+            else:
+                c.execute(
+                    """
+                    INSERT INTO open_limit_state (user_key, period_key, opened_count, last_open_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (user_key, period_key, new_used, now_text, now_text),
+                )
+
+            conn.commit()
+            if daily_limit > 0:
+                remaining_today = max(0, daily_limit - new_used)
+            else:
+                remaining_today = -1
+            return allowed_count, new_used, remaining_today
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def migrate_json_history(self, item_img_map):
         if not os.path.exists(HISTORY_FILE): return
@@ -364,7 +447,7 @@ class GifGenerator:
         self.SCROLL_DURATION = 3.5  
         
         try:
-            self.font = ImageFont.truetype("msyh.ttc", 16) 
+            self.font = ImageFont.truetype("msyh.ttc", 16)
             self.font_bold = ImageFont.truetype("msyhbd.ttc", 20)
             self.font_title = ImageFont.truetype("msyhbd.ttc", 24)
         except:
@@ -505,7 +588,7 @@ class GifGenerator:
         img = Image.new("RGB", (width, height), (30, 30, 35))
         draw = ImageDraw.Draw(img)
         
-        draw.text((padding, 20), f"📦 个人库存总览", fill=(255, 215, 0), font=self.font_title)
+        draw.text((padding, 20), "📦 个人库存总览", fill=(255, 215, 0), font=self.font_title)
         draw.text((padding, 55), f"总物品数: {stats_data['total']}", fill=(200, 200, 200), font=self.font)
         
         s_y = header_h
@@ -562,35 +645,34 @@ class GifGenerator:
     #  生成菜单图片
     def generate_help_card(self):
         width = 600
-        height = 480
+        commands = [
+            ("📦 开箱[数量] [名称]", "开指定数量的武器箱/纪念包(如: 开箱 10 命悬)"),
+            ("🎒 库存", "查看当前的饰品库存统计(生成图片)"),
+            ("💰 查询价格 [名称]", "查询饰品BUFF/Steam参考价格"),
+            ("📜 武器箱列表", "查看所有可开箱的容器名称"),
+            ("🗑️ 清除库存", "清空自己的所有开箱记录(不可恢复)"),
+            ("🔄 更新武器箱", "(管理员) 从服务器同步最新数据"),
+            ("🧹 清除缓存", "(管理员) 清理本地临时图片文件"),
+        ]
+        height = max(480, 130 + len(commands) * 70)
         img = Image.new("RGB", (width, height), (30, 30, 35))
         draw = ImageDraw.Draw(img)
-        
+
         # 标题
         draw.text((20, 20), "🔫 CS2 开箱模拟", fill=(255, 215, 0), font=self.font_title)
         draw.text((20, 60), "v1.3", fill=(150, 150, 150), font=self.font)
-        
+
         # 分割线
         draw.line([(20, 90), (width-20, 90)], fill=(60, 60, 60), width=2)
-        
+
         # 指令列表
-        commands = [
-            ("📦 开箱 [数量] [名称]", "开启指定数量的武器箱/纪念包 (如: 开箱 10 命悬)"),
-            ("🎒 库存", "查看当前的饰品库存统计 (生成图片)"),
-            ("💰 查询价格 [名称]", "查询饰品BUFF/Steam参考价格"),
-            ("📜 武器箱列表", "查看所有可开启的容器名称"),
-            ("🗑️ 清除库存", "清空自己的所有开箱记录 (不可恢复)"),
-            ("🔄 更新武器箱", "(管理员) 从服务器同步最新数据"),
-            ("🧹 清除缓存", "(管理员) 清理本地临时图片文件")
-        ]
-        
         y = 110
         for cmd, desc in commands:
-            # 指令名 (高亮)
+            # 指令名(高亮)
             draw.text((30, y), cmd, fill=(255, 255, 255), font=self.font_bold)
             # 描述 (灰色)
             draw.text((30, y+30), desc, fill=(180, 180, 180), font=self.font)
-            y += 70 # 行间距
+            y += 70
 
         output = BytesIO()
         img.save(output, format="PNG")
@@ -606,7 +688,8 @@ class CasePlugin(Star):
         self.api_token = self.config.get('api_token', 'GWBR21M7K474Z3R5Y5H8K9J6')
         
         self.net_mgr = NetworkManager(self.api_token) 
-        self.img_mgr = ImageManager()
+        cache_days = self._safe_int(self.config.get("cache_retention_days", 0), 0, minimum=0)
+        self.img_mgr = ImageManager(cache_days)
         self.gif_gen = GifGenerator(self.img_mgr)
         self.db = DatabaseManager() 
         
@@ -625,6 +708,42 @@ class CasePlugin(Star):
             self.admins = [x.strip() for x in str(raw_admins).replace("，", ",").split(",") if x.strip()]
             
         print(f"插件加载完成 (v4.4 Release)。Config: Number={self.config.get('number', 10)}, Admins={self.admins}")
+
+    def _safe_int(self, value, default, minimum=0):
+        try:
+            num = int(value)
+        except Exception:
+            num = default
+        return max(minimum, num)
+
+    def _max_open_per_request(self) -> int:
+        return self._safe_int(self.config.get("max_open_per_request", 50), 50, minimum=1)
+
+    def _max_open_per_day(self) -> int:
+        # 0 means unlimited
+        return self._safe_int(self.config.get("max_open_per_day", 500), 500, minimum=0)
+    def _daily_reset_time(self) -> str:
+        raw = str(self.config.get("daily_reset_time", "04:00")).strip()
+        if not re.match(r"^\d{1,2}:\d{1,2}$", raw):
+            return "04:00"
+        hour, minute = raw.split(":", 1)
+        h = min(max(int(hour), 0), 23)
+        m = min(max(int(minute), 0), 59)
+        return f"{h:02d}:{m:02d}"
+
+    def _current_period_key(self, now_dt=None) -> str:
+        """
+        按系统本地时间 + 每日刷新时间，计算当前统计周期。
+        """
+        now_dt = now_dt or datetime.now()
+        hhmm = self._daily_reset_time()
+        h, m = [int(x) for x in hhmm.split(":")]
+        reset_dt = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+        if now_dt < reset_dt:
+            period_date = (now_dt - timedelta(days=1)).date()
+        else:
+            period_date = now_dt.date()
+        return period_date.isoformat()
 
     def _identify_container_type(self, case_name):
         if "纪念包" in case_name: return "souvenir"
@@ -712,15 +831,28 @@ class CasePlugin(Star):
 
     def _parse_command(self, msg: str) -> tuple:
         clean_msg = msg.replace("开箱", "", 1).strip()
-        if not clean_msg: return None, 1
+        if not clean_msg:
+            return None, 1
+
+        requested_count = 1
+        case_name = clean_msg
+
         parts = clean_msg.split(maxsplit=1)
-        if len(parts) > 1 and parts[0].isdigit(): return parts[1], min(int(parts[0]), 200)
-        if len(parts) > 1 and parts[1].isdigit(): return parts[0], min(int(parts[1]), 200)
-        match = re.search(r'(\d+)$', clean_msg)
-        if match:
-            num_str = match.group(1)
-            return clean_msg[:-len(num_str)].strip(), min(int(num_str), 200)
-        return clean_msg, 1
+        if len(parts) > 1 and parts[0].isdigit():
+            requested_count = int(parts[0])
+            case_name = parts[1]
+        elif len(parts) > 1 and parts[1].isdigit():
+            requested_count = int(parts[1])
+            case_name = parts[0]
+        else:
+            match = re.search(r'(\d+)$', clean_msg)
+            if match:
+                num_str = match.group(1)
+                requested_count = int(num_str)
+                case_name = clean_msg[:-len(num_str)].strip()
+
+        requested_count = max(1, requested_count)
+        return case_name.strip(), requested_count
 
     @event_message_type(EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
@@ -840,13 +972,20 @@ class CasePlugin(Star):
 
     async def _handle_open(self, event: AstrMessageEvent):
         msg = event.message_str.strip()
-        case_name, count = self._parse_command(msg)
+        max_per_request = self._max_open_per_request()
+        max_per_day = self._max_open_per_day()
+
+        case_name, requested_count = self._parse_command(msg)
         if not case_name:
-            yield event.plain_result("❌ 请输入名称")
+            yield event.plain_result("❌ 请输入开箱名称")
             return
-        
+        if requested_count > max_per_request:
+            yield event.plain_result(f"❌ 单次开箱上限为 {max_per_request}，请调整数量")
+            return
+
         target_case = None
-        if case_name in self.case_data: target_case = case_name
+        if case_name in self.case_data:
+            target_case = case_name
         else:
             for name in self.case_data.keys():
                 if case_name in name:
@@ -859,7 +998,33 @@ class CasePlugin(Star):
         user_id = str(event.get_sender_id())
         group_id = str(event.message_obj.group_id)
         user_key = f"{group_id}-{user_id}"
-        
+
+        now_dt = datetime.now()
+        period_key = self._current_period_key(now_dt)
+        now_text = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        count = requested_count
+        allowed_count, used_today, remaining_today = self.db.consume_daily_quota(
+            user_key=user_key,
+            period_key=period_key,
+            request_count=count,
+            daily_limit=max_per_day,
+            now_text=now_text,
+        )
+
+        if allowed_count <= 0:
+            if max_per_day > 0:
+                yield event.plain_result(f"❌ 今日开箱已达上限（{max_per_day}），请明日再来")
+            else:
+                yield event.plain_result("❌ 开箱数量必须大于 0")
+            return
+
+        limit_msgs = []
+        if allowed_count < count and max_per_day > 0:
+            limit_msgs.append(f"当前周期额度不足，本次按可用额度开箱 {allowed_count} 次")
+
+        count = allowed_count
+
         items_res = []
         for _ in range(count):
             item = self._generate_item(target_case)
@@ -873,17 +1038,17 @@ class CasePlugin(Star):
             winner = items_res[0]
             chain = [Comp.At(qq=user_id)]
             chain.append(Comp.Plain(f" 【{target_case}】开启结果\n"))
-            
+
             case_img_url = self.case_images.get(target_case)
             if case_img_url:
                 try:
                     img_obj = await self.img_mgr.get_image(case_img_url)
                     if img_obj:
-                        base_width = 180 
+                        base_width = 180
                         w_percent = (base_width / float(img_obj.size[0]))
                         h_size = int((float(img_obj.size[1]) * float(w_percent)))
                         img_small = img_obj.resize((base_width, h_size), Image.Resampling.LANCZOS)
-                        
+
                         temp_cover_path = os.path.join(IMAGES_DIR, f"cover_{user_id}.png")
                         img_small.save(temp_cover_path)
                         chain.append(Comp.Image.fromFileSystem(temp_cover_path))
@@ -893,72 +1058,89 @@ class CasePlugin(Star):
             try:
                 all_possible_items = self.case_data[target_case]
                 gif_bytes = await self.gif_gen.generate(winner, all_possible_items)
-                
+
                 temp_gif_path = os.path.join(IMAGES_DIR, f"temp_{user_id}.gif")
-                with open(temp_gif_path, "wb") as f: f.write(gif_bytes)
+                with open(temp_gif_path, "wb") as f:
+                    f.write(gif_bytes)
                 chain.append(Comp.Image.fromFileSystem(temp_gif_path))
             except Exception as e:
                 print(f"GIF生成失败: {e}")
-                if winner.get("img"): chain.append(Comp.Image.fromURL(winner["img"]))
+                if winner.get("img"):
+                    chain.append(Comp.Image.fromURL(winner["img"]))
 
             ctype = self._identify_container_type(target_case)
             info = f"\n🎁 {winner['name']} ({winner['quality']})\n"
-            if ctype != "capsule": info += f"🔧 {winner['wear_level']} ({winner['wear_value']:.5f})"
+            if ctype != "capsule":
+                info += f"🔧 {winner['wear_level']} ({winner['wear_value']:.5f})"
             chain.append(Comp.Plain(info))
-            
+
             chain.append(Comp.Plain(f"\n📦 总库存: {total_count}"))
+            if max_per_day > 0:
+                chain.append(Comp.Plain(f"\n今日已开: {used_today}/{max_per_day}，剩余: {remaining_today}"))
+            if limit_msgs:
+                chain.append(Comp.Plain(f"\n提示: {'；'.join(limit_msgs)}"))
             yield event.chain_result(chain)
         else:
             chain = [Comp.At(qq=user_id)]
-            
+
             best_item = None
             best_score = -1
-            score_map = {"非凡": 10, "Contraband": 9, "隐秘": 8} 
-            
+            score_map = {"非凡": 10, "Contraband": 9, "隐秘": 8}
+
             for item in items_res:
                 score = score_map.get(item['quality'], 0)
                 if score > best_score:
                     best_score = score
                     best_item = item
-            
+
             if best_item and best_score > 0:
-                chain.append(Comp.Plain(f" ✨ 欧气爆发！开出了稀有物品！\n"))
+                chain.append(Comp.Plain(" ✨ 欧气爆发！开出了稀有物品！\n"))
                 try:
                     all_possible_items = self.case_data[target_case]
                     gif_bytes = await self.gif_gen.generate(best_item, all_possible_items)
                     temp_gif_path = os.path.join(IMAGES_DIR, f"temp_rare_{user_id}.gif")
-                    with open(temp_gif_path, "wb") as f: f.write(gif_bytes)
+                    with open(temp_gif_path, "wb") as f:
+                        f.write(gif_bytes)
                     chain.append(Comp.Image.fromFileSystem(temp_gif_path))
-                except: pass
+                except:
+                    pass
 
             chain.append(Comp.Plain(f" ⚡ 开启【{target_case}】x{count}\n"))
             if count <= 10:
                 for item in items_res:
-                    if item.get("img"): chain.append(Comp.Image.fromURL(item["img"]))
+                    if item.get("img"):
+                        chain.append(Comp.Image.fromURL(item["img"]))
                     info = f"🎁 {item['name']} ({item['quality']})\n"
                     ctype = self._identify_container_type(target_case)
-                    if ctype != "capsule": info += f"🔧 {item['wear_level']} ({item['wear_value']:.5f})\n"
+                    if ctype != "capsule":
+                        info += f"🔧 {item['wear_level']} ({item['wear_value']:.5f})\n"
                     chain.append(Comp.Plain(info))
             else:
                 stats = {}
                 rare = []
                 for item in items_res:
                     stats[item['quality']] = stats.get(item['quality'], 0) + 1
-                    if item.get("is_special") or item['quality'] in ["隐秘", "非凡", "Contraband"]: 
+                    if item.get("is_special") or item['quality'] in ["隐秘", "非凡", "Contraband"]:
                         rare.append(item)
-                
+
                 chain.append(Comp.Plain("\n📊 统计结果：\n"))
-                for q, c in stats.items(): chain.append(Comp.Plain(f"· {q}: {c}个\n"))
-                
+                for q, c in stats.items():
+                    chain.append(Comp.Plain(f"· {q}: {c}个\n"))
+
                 if rare:
                     chain.append(Comp.Plain("\n💎 稀有掉落：\n"))
                     for item in rare:
-                        if item.get("img"): chain.append(Comp.Image.fromURL(item["img"]))
-                        chain.append(Comp.Plain(f"▫ {item['name']}\n"))
+                        if item.get("img"):
+                            chain.append(Comp.Image.fromURL(item["img"]))
+                        chain.append(Comp.Plain(f"▸ {item['name']}\n"))
                         ctype = self._identify_container_type(target_case)
                         if ctype != "capsule":
                             chain.append(Comp.Plain(f"   🔧 {item['wear_level']} ({item['wear_value']:.5f})\n"))
             chain.append(Comp.Plain(f"\n📦 总库存: {total_count}"))
+            if max_per_day > 0:
+                chain.append(Comp.Plain(f"\n今日已开: {used_today}/{max_per_day}，剩余: {remaining_today}"))
+            if limit_msgs:
+                chain.append(Comp.Plain(f"\n提示: {'；'.join(limit_msgs)}"))
             yield event.chain_result(chain)
 
     async def _handle_purge(self, event):
@@ -1030,3 +1212,6 @@ class CasePlugin(Star):
             p = res.split('\n',1)
             yield event.chain_result([Comp.At(qq=event.get_sender_id()), Comp.Image.fromURL(p[0]), Comp.Plain("\n"+p[1])])
         else: yield event.plain_result(res)
+
+
+

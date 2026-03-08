@@ -12,10 +12,13 @@ import shutil
 import sqlite3
 from io import BytesIO
 from functools import lru_cache
-import astrbot.api.message_components as Comp
 from urllib.parse import quote
 from datetime import datetime, timedelta
+
+# === AstrBot 核心引用 ===
+import astrbot.api.message_components as Comp
 from astrbot.api.all import *
+from astrbot.api.star import StarTools  
 
 # === 引入图像处理库 ===
 try:
@@ -23,13 +26,28 @@ try:
 except ImportError:
     raise ImportError("请先安装 Pillow 库: pip install Pillow")
 
-# === 路径配置 ===
-PLUGIN_DIR = os.path.join('data', 'plugins', 'astrbot_plugin_openweaponscase', 'data')
-IMAGES_MAP_FILE = os.path.join(PLUGIN_DIR, 'case_images.json')
-HISTORY_FILE = os.path.join(PLUGIN_DIR, 'open_history.json')
-CASES_FILE = os.path.join(PLUGIN_DIR, 'cases.json')
-DB_FILE = os.path.join(PLUGIN_DIR, 'data.db')
-IMAGES_DIR = os.path.join(PLUGIN_DIR, 'images')
+# ================= 目录结构配置 =================
+PLUGIN_ROOT = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(PLUGIN_ROOT, 'data')
+IMAGES_DIR = os.path.join(DATA_DIR, 'images')
+DB_FILE = os.path.join(DATA_DIR, 'data.db')
+
+# ================= 目录结构与自动字体配置 =================
+FONT_DIR = os.path.join(PLUGIN_ROOT, 'font')
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(IMAGES_DIR, exist_ok=True)
+os.makedirs(FONT_DIR, exist_ok=True) # 确保 font 目录存在
+
+# 自动搜索 font 目录下的可用字体文件
+FONT_PATH = None
+for file_name in os.listdir(FONT_DIR):
+    # 支持常见的字体后缀
+    if file_name.lower().endswith(('.ttf', '.ttc', '.otf')):
+        FONT_PATH = os.path.join(FONT_DIR, file_name)
+        break # 找到第一个就停止
+
+OLD_HISTORY_FILE = os.path.join(PLUGIN_ROOT, 'open_history.json')
+OLD_HISTORY_FILE_IN_DATA = os.path.join(DATA_DIR, 'open_history.json')
 
 # ================= 配置区域 =================
 
@@ -100,7 +118,6 @@ class NetworkManager:
 # ================= 辅助类：图片管理 =================
 class ImageManager:
     def __init__(self, retention_days: int = 0):
-        os.makedirs(IMAGES_DIR, exist_ok=True)
         self.ssl_context = ssl._create_unverified_context()
         self._cleanup_cache(retention_days)
 
@@ -159,9 +176,19 @@ class ImageManager:
 # ================= 辅助类：数据库管理 =================
 class DatabaseManager:
     def __init__(self):
-        os.makedirs(PLUGIN_DIR, exist_ok=True)
         self.db_path = DB_FILE
+        self._ensure_structure()
         self._init_db()
+
+    def _ensure_structure(self):
+        if os.path.exists(self.db_path): return
+        root_db = os.path.join(PLUGIN_ROOT, 'data.db')
+        if os.path.exists(root_db):
+            print(f"[Init] 正在将数据库从根目录移动到 data 目录...")
+            try:
+                shutil.move(root_db, self.db_path)
+            except Exception as e:
+                print(f"[Init] 移动数据库失败: {e}")
 
     def _get_conn(self):
         return sqlite3.connect(self.db_path)
@@ -186,6 +213,7 @@ class DatabaseManager:
             if 'img_url' not in columns: c.execute("ALTER TABLE history ADD COLUMN img_url TEXT")
         except: pass
         c.execute('''CREATE INDEX IF NOT EXISTS idx_user_key ON history (user_key)''')
+        
         c.execute('''CREATE TABLE IF NOT EXISTS user_stats (
                         user_key TEXT NOT NULL,
                         quality TEXT NOT NULL,
@@ -206,6 +234,7 @@ class DatabaseManager:
                         FOREIGN KEY(container_name) REFERENCES containers(name)
                     )''')
         c.execute('''CREATE INDEX IF NOT EXISTS idx_container ON items (container_name)''')
+
         c.execute('''CREATE TABLE IF NOT EXISTS open_limit_state (
                         user_key TEXT NOT NULL,
                         period_key TEXT NOT NULL,
@@ -215,27 +244,19 @@ class DatabaseManager:
                         PRIMARY KEY (user_key, period_key)
                     )''')
         c.execute('''CREATE INDEX IF NOT EXISTS idx_open_limit_user_period ON open_limit_state (user_key, period_key)''')
+
         conn.commit()
         conn.close()
 
     def consume_daily_quota(self, user_key, period_key, request_count, daily_limit, now_text):
-        """
-        每日额度检查区域
-        返回: (allowed_count, used_today, remaining_today)
-        """
         if request_count <= 0:
-            if daily_limit > 0:
-                return 0, 0, daily_limit
-            return 0, 0, -1
+            return 0, 0, daily_limit if daily_limit > 0 else -1
 
         conn = self._get_conn()
         c = conn.cursor()
         try:
             c.execute("BEGIN IMMEDIATE")
-            c.execute(
-                "SELECT opened_count FROM open_limit_state WHERE user_key=? AND period_key=?",
-                (user_key, period_key),
-            )
+            c.execute("SELECT opened_count FROM open_limit_state WHERE user_key=? AND period_key=?", (user_key, period_key))
             row = c.fetchone()
             used_today = int(row[0]) if row else 0
 
@@ -247,29 +268,14 @@ class DatabaseManager:
 
             new_used = used_today + allowed_count
             if row:
-                c.execute(
-                    """
-                    UPDATE open_limit_state
-                    SET opened_count=?, last_open_at=?, updated_at=?
-                    WHERE user_key=? AND period_key=?
-                    """,
-                    (new_used, now_text, now_text, user_key, period_key),
-                )
+                c.execute("""UPDATE open_limit_state SET opened_count=?, last_open_at=?, updated_at=?
+                             WHERE user_key=? AND period_key=?""", (new_used, now_text, now_text, user_key, period_key))
             else:
-                c.execute(
-                    """
-                    INSERT INTO open_limit_state (user_key, period_key, opened_count, last_open_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (user_key, period_key, new_used, now_text, now_text),
-                )
+                c.execute("""INSERT INTO open_limit_state (user_key, period_key, opened_count, last_open_at, updated_at)
+                             VALUES (?, ?, ?, ?, ?)""", (user_key, period_key, new_used, now_text, now_text))
 
             conn.commit()
-            if daily_limit > 0:
-                remaining_today = max(0, daily_limit - new_used)
-            else:
-                remaining_today = -1
-            return allowed_count, new_used, remaining_today
+            return allowed_count, new_used, (max(0, daily_limit - new_used) if daily_limit > 0 else -1)
         except Exception:
             conn.rollback()
             raise
@@ -277,74 +283,42 @@ class DatabaseManager:
             conn.close()
 
     def migrate_json_history(self, item_img_map):
-        if not os.path.exists(HISTORY_FILE): return
+        target_json = None
+        if os.path.exists(OLD_HISTORY_FILE): target_json = OLD_HISTORY_FILE
+        elif os.path.exists(OLD_HISTORY_FILE_IN_DATA): target_json = OLD_HISTORY_FILE_IN_DATA
+        if not target_json: return
+        
         conn = self._get_conn()
         c = conn.cursor()
         c.execute("SELECT count(*) FROM user_stats")
-        has_stats = c.fetchone()[0] > 0
-        if has_stats:
+        if c.fetchone()[0] > 0:
             conn.close()
             return
 
-        print("检测到旧版历史记录，正在迁移至数据库...")
+        print(f"正在从 {target_json} 迁移历史记录...")
         try:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f: old_data = json.load(f)
+            with open(target_json, 'r', encoding='utf-8') as f: old_data = json.load(f)
             history_rows = []
             stats_rows = []
-            
             for uid, data in old_data.items():
                 for item in data.get("items", []):
                     name = item.get("name", "未知")
                     clean_name = name.replace("StatTrak™ | ", "").replace("纪念品 | ", "").strip()
                     if "多普勒" in clean_name and "(" in clean_name: clean_name = clean_name.split("(")[0].strip()
-                    
                     img_url = item_img_map.get(clean_name)
                     if not img_url and "|" in clean_name:
                         img_url = item_img_map.get(clean_name.split("|")[-1].strip())
-                    
-                    final_img = img_url if img_url else "" 
-                    history_rows.append((uid, name, "未知", item.get("wear_value", 0), 1, final_img))
+                    history_rows.append((uid, name, "未知", item.get("wear_value", 0), 1, img_url if img_url else ""))
                 
                 for quality, count in data.get("other_stats", {}).items():
-                    if count > 0:
-                        stats_rows.append((uid, quality, count))
+                    if count > 0: stats_rows.append((uid, quality, count))
             
-            if history_rows:
-                c.executemany("INSERT INTO history (user_key, name, quality, wear_value, is_special, img_url) VALUES (?, ?, ?, ?, ?, ?)", history_rows)
-            if stats_rows:
-                c.executemany("INSERT OR REPLACE INTO user_stats (user_key, quality, count) VALUES (?, ?, ?)", stats_rows)
-            
+            if history_rows: c.executemany("INSERT INTO history (user_key, name, quality, wear_value, is_special, img_url) VALUES (?, ?, ?, ?, ?, ?)", history_rows)
+            if stats_rows: c.executemany("INSERT OR REPLACE INTO user_stats (user_key, quality, count) VALUES (?, ?, ?)", stats_rows)
             conn.commit()
-            print("历史记录迁移完成。")
-            os.rename(HISTORY_FILE, HISTORY_FILE + ".bak")
-        except Exception as e:
-            print(f"历史迁移警告: {e}")
-        finally: conn.close()
-
-    def migrate_cases(self):
-        if not os.path.exists(CASES_FILE): return
-        conn = self._get_conn()
-        c = conn.cursor()
-        c.execute("SELECT count(*) FROM containers")
-        if c.fetchone()[0] > 0:
-            conn.close()
-            return
-        try:
-            with open(CASES_FILE, 'r', encoding='utf-8') as f: cases = json.load(f)
-            case_imgs = {}
-            if os.path.exists(IMAGES_MAP_FILE):
-                with open(IMAGES_MAP_FILE, 'r', encoding='utf-8') as f: case_imgs = json.load(f)
-            for name, items in cases.items():
-                img = case_imgs.get(name, "")
-                c.execute("INSERT OR REPLACE INTO containers (name, img_url) VALUES (?, ?)", (name, img))
-                rows = []
-                for item in items:
-                    rows.append((name, item.get("short_name"), item.get("rln"), item.get("img")))
-                c.executemany("INSERT INTO items (container_name, short_name, quality, img_url) VALUES (?, ?, ?, ?)", rows)
-            conn.commit()
-            os.rename(CASES_FILE, CASES_FILE + ".bak")
-            if os.path.exists(IMAGES_MAP_FILE): os.rename(IMAGES_MAP_FILE, IMAGES_MAP_FILE + ".bak")
-        except Exception as e: pass
+            print("迁移完成。")
+            os.rename(target_json, target_json + ".bak")
+        except Exception as e: print(f"历史迁移警告: {e}")
         finally: conn.close()
 
     def save_all_data(self, new_cases, new_imgs):
@@ -447,26 +421,32 @@ class GifGenerator:
         self.SCROLL_DURATION = 3.5  
         
         try:
-            self.font = ImageFont.truetype("msyh.ttc", 16)
-            self.font_bold = ImageFont.truetype("msyhbd.ttc", 20)
-            self.font_title = ImageFont.truetype("msyhbd.ttc", 24)
-        except:
-            self.font = ImageFont.load_default()
-            self.font_bold = self.font
-            self.font_title = self.font
+            # 尝试加载用户提供的字体文件，使用不同字号区分层级
+            self.font = ImageFont.truetype(FONT_PATH, 16)
+            self.font_bold = ImageFont.truetype(FONT_PATH, 20)
+            self.font_title = ImageFont.truetype(FONT_PATH, 24)
+        except Exception as e:
+            print(f"本地字体加载失败 ({FONT_PATH}): {e}，将尝试系统字体")
+            try:
+                # 备用方案：系统自带的微软雅黑
+                self.font = ImageFont.truetype("msyh.ttc", 16)
+                self.font_bold = ImageFont.truetype("msyhbd.ttc", 20)
+                self.font_title = ImageFont.truetype("msyhbd.ttc", 24)
+            except:
+                # Pillow 默认位图字体 (Linux下不支持中文)
+                self.font = ImageFont.load_default()
+                self.font_bold = self.font
+                self.font_title = self.font
 
     async def generate(self, winner_item, case_items, case_img_url=None):
         filler_pool = [i for i in case_items if i.get("rln") != "非凡"]
         if not filler_pool: filler_pool = case_items
 
         scroll_items = []
-        for _ in range(self.HEAD_BUFFER):
-            scroll_items.append(random.choice(filler_pool))
-        for _ in range(self.WINNER_INDEX):
-            scroll_items.append(random.choice(filler_pool))
+        for _ in range(self.HEAD_BUFFER): scroll_items.append(random.choice(filler_pool))
+        for _ in range(self.WINNER_INDEX): scroll_items.append(random.choice(filler_pool))
         scroll_items.append(winner_item) 
-        for _ in range(self.TOTAL_ITEMS - self.WINNER_INDEX - 1):
-            scroll_items.append(random.choice(filler_pool))
+        for _ in range(self.TOTAL_ITEMS - self.WINNER_INDEX - 1): scroll_items.append(random.choice(filler_pool))
 
         img_tasks = [self.img_mgr.get_image(item.get("img")) for item in scroll_items]
         item_images = await asyncio.gather(*img_tasks)
@@ -531,7 +511,7 @@ class GifGenerator:
 
             else:
                 outro_progress = (f - scroll_frames) / outro_frames
-                scale = 1.0 + 0.3 * outro_progress # 1.0 -> 1.3
+                scale = 1.0 + 0.3 * outro_progress 
                 
                 item_data = items_data[REAL_WINNER_INDEX]
                 img = images[REAL_WINNER_INDEX]
@@ -588,7 +568,7 @@ class GifGenerator:
         img = Image.new("RGB", (width, height), (30, 30, 35))
         draw = ImageDraw.Draw(img)
         
-        draw.text((padding, 20), "📦 个人库存总览", fill=(255, 215, 0), font=self.font_title)
+        draw.text((padding, 20), "个人库存总览", fill=(255, 215, 0), font=self.font_title)
         draw.text((padding, 55), f"总物品数: {stats_data['total']}", fill=(200, 200, 200), font=self.font)
         
         s_y = header_h
@@ -604,7 +584,7 @@ class GifGenerator:
         
         list_y = header_h + stats_h
         draw.line([(padding, list_y-10), (width-padding, list_y-10)], fill=(60,60,60), width=1)
-        draw.text((padding, list_y-35), "💎 最近稀有掉落", fill=(255, 255, 255), font=self.font)
+        draw.text((padding, list_y-35), "最近稀有掉落", fill=(255, 255, 255), font=self.font)
         
         for item in rare_items:
             bg_rect = [padding, list_y, width-padding, list_y+item_h]
@@ -642,35 +622,29 @@ class GifGenerator:
         img.save(output, format="PNG")
         return output.getvalue()
 
-    #  生成菜单图片
     def generate_help_card(self):
         width = 600
         commands = [
-            ("📦 开箱[数量] [名称]", "开指定数量的武器箱/纪念包(如: 开箱 10 命悬)"),
-            ("🎒 库存", "查看当前的饰品库存统计(生成图片)"),
-            ("💰 查询价格 [名称]", "查询饰品BUFF/Steam参考价格"),
-            ("📜 武器箱列表", "查看所有可开箱的容器名称"),
-            ("🗑️ 清除库存", "清空自己的所有开箱记录(不可恢复)"),
-            ("🔄 更新武器箱", "(管理员) 从服务器同步最新数据"),
-            ("🧹 清除缓存", "(管理员) 清理本地临时图片文件"),
+            ("> 开箱 [数量] [名称]", "开指定数量的武器箱/纪念包 (如: 开箱 10 命悬)"),
+            ("> 库存", "查看当前的饰品库存统计 (生成图片)"),
+            ("> 查询价格 [名称]", "查询饰品BUFF/Steam参考价格"),
+            ("> 武器箱列表", "查看所有可开箱的容器名称"),
+            ("> 清除库存", "清空自己的所有开箱记录 (不可恢复)"),
+            ("> 更新武器箱", "(管理员) 从服务器同步最新数据"),
+            ("> 清除缓存", "(管理员) 清理本地临时图片文件"),
         ]
         height = max(480, 130 + len(commands) * 70)
         img = Image.new("RGB", (width, height), (30, 30, 35))
         draw = ImageDraw.Draw(img)
 
-        # 标题
-        draw.text((20, 20), "🔫 CS2 开箱模拟", fill=(255, 215, 0), font=self.font_title)
-        draw.text((20, 60), "v1.3", fill=(150, 150, 150), font=self.font)
+        draw.text((20, 20), "CS2 开箱模拟", fill=(255, 215, 0), font=self.font_title)
+        draw.text((20, 60), "v1.3.1", fill=(150, 150, 150), font=self.font)
 
-        # 分割线
         draw.line([(20, 90), (width-20, 90)], fill=(60, 60, 60), width=2)
 
-        # 指令列表
         y = 110
         for cmd, desc in commands:
-            # 指令名(高亮)
             draw.text((30, y), cmd, fill=(255, 255, 255), font=self.font_bold)
-            # 描述 (灰色)
             draw.text((30, y+30), desc, fill=(180, 180, 180), font=self.font)
             y += 70
 
@@ -678,14 +652,14 @@ class GifGenerator:
         img.save(output, format="PNG")
         return output.getvalue()
 
-@register("CS武器箱开箱模拟", "luooka", "支持武器箱、纪念包、收藏品开箱模拟(带动画)", "1.3")
+@register("CS武器箱开箱模拟", "luooka", "支持武器箱、纪念包、收藏品开箱模拟(带动画)", "1.3.1")
 class CasePlugin(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config
         
         self.api_host = self.config.get('api_host', 'api.csqaq.com').replace("https://", "").replace("http://", "").strip("/")
-        self.api_token = self.config.get('api_token', 'GWBR21M7K474Z3R5Y5H8K9J6')
+        self.api_token = self.config.get('api_token', '')
         
         self.net_mgr = NetworkManager(self.api_token) 
         cache_days = self._safe_int(self.config.get("cache_retention_days", 0), 0, minimum=0)
@@ -693,10 +667,9 @@ class CasePlugin(Star):
         self.gif_gen = GifGenerator(self.img_mgr)
         self.db = DatabaseManager() 
         
-        self.db.migrate_cases() 
         self.case_data, self.case_images, self.item_img_map = self.db.load_all_data()
         
-        if os.path.exists(HISTORY_FILE):
+        if os.path.exists(OLD_HISTORY_FILE) or os.path.exists(OLD_HISTORY_FILE_IN_DATA):
             self.db.migrate_json_history(self.item_img_map)
             
         self._recalculate_probabilities(self.case_data)
@@ -707,7 +680,7 @@ class CasePlugin(Star):
         else:
             self.admins = [x.strip() for x in str(raw_admins).replace("，", ",").split(",") if x.strip()]
             
-        print(f"插件加载完成 (v4.4 Release)。Config: Number={self.config.get('number', 10)}, Admins={self.admins}")
+        print(f"插件加载完成 (v1.3.1)。Config: Number={self.config.get('max_open_per_request', 50)}, Admins={self.admins}")
 
     def _safe_int(self, value, default, minimum=0):
         try:
@@ -720,8 +693,8 @@ class CasePlugin(Star):
         return self._safe_int(self.config.get("max_open_per_request", 50), 50, minimum=1)
 
     def _max_open_per_day(self) -> int:
-        # 0 means unlimited
         return self._safe_int(self.config.get("max_open_per_day", 500), 500, minimum=0)
+
     def _daily_reset_time(self) -> str:
         raw = str(self.config.get("daily_reset_time", "04:00")).strip()
         if not re.match(r"^\d{1,2}:\d{1,2}$", raw):
@@ -732,9 +705,6 @@ class CasePlugin(Star):
         return f"{h:02d}:{m:02d}"
 
     def _current_period_key(self, now_dt=None) -> str:
-        """
-        按系统本地时间 + 每日刷新时间，计算当前统计周期。
-        """
         now_dt = now_dt or datetime.now()
         hhmm = self._daily_reset_time()
         h, m = [int(x) for x in hhmm.split(":")]
@@ -872,7 +842,6 @@ class CasePlugin(Star):
             else:
                 yield event.plain_result(f"❌ 权限不足：仅管理员可更新数据。")
         elif msg == "开箱菜单":
-            # [v4.4] 发送菜单图片
             img_bytes = self.gif_gen.generate_help_card()
             yield event.chain_result([Comp.Image.fromBytes(img_bytes)])
         elif msg == "武器箱列表":
@@ -1074,7 +1043,7 @@ class CasePlugin(Star):
                 info += f"🔧 {winner['wear_level']} ({winner['wear_value']:.5f})"
             chain.append(Comp.Plain(info))
 
-            chain.append(Comp.Plain(f"\n📦 总库存: {total_count}"))
+            chain.append(Comp.Plain(f"\n 总库存: {total_count}"))
             if max_per_day > 0:
                 chain.append(Comp.Plain(f"\n今日已开: {used_today}/{max_per_day}，剩余: {remaining_today}"))
             if limit_msgs:
@@ -1173,7 +1142,6 @@ class CasePlugin(Star):
             yield event.plain_result("\n".join(msg))
 
     async def _show_menu(self, event):
-        # 菜单图片
         img_bytes = self.gif_gen.generate_help_card()
         yield event.chain_result([Comp.Image.fromBytes(img_bytes)])
 
@@ -1212,6 +1180,3 @@ class CasePlugin(Star):
             p = res.split('\n',1)
             yield event.chain_result([Comp.At(qq=event.get_sender_id()), Comp.Image.fromURL(p[0]), Comp.Plain("\n"+p[1])])
         else: yield event.plain_result(res)
-
-
-

@@ -20,6 +20,8 @@ import astrbot.api.message_components as Comp
 from astrbot.api.all import *
 from astrbot.api.star import StarTools  
 
+from . import interactive_menu_api
+
 # === 引入图像处理库 ===
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -628,7 +630,7 @@ class GifGenerator:
             ("> 开箱 [数量] [名称]", "开指定数量的武器箱/纪念包 (如: 开箱 10 命悬)"),
             ("> 库存", "查看当前的饰品库存统计 (生成图片)"),
             ("> 查询价格 [名称]", "查询饰品BUFF/Steam参考价格"),
-            ("> 武器箱列表", "查看所有可开箱的容器名称"),
+            ("> 武器箱列表", "查看当前收录的武器箱、纪念包和收藏品"),
             ("> 清除库存", "清空自己的所有开箱记录 (不可恢复)"),
             ("> 更新武器箱", "(管理员) 从服务器同步最新数据"),
             ("> 清除缓存", "(管理员) 清理本地临时图片文件"),
@@ -638,7 +640,7 @@ class GifGenerator:
         draw = ImageDraw.Draw(img)
 
         draw.text((20, 20), "CS2 开箱模拟", fill=(255, 215, 0), font=self.font_title)
-        draw.text((20, 60), "v1.3.1", fill=(150, 150, 150), font=self.font)
+        draw.text((20, 60), "v1.3.2", fill=(150, 150, 150), font=self.font)
 
         draw.line([(20, 90), (width-20, 90)], fill=(60, 60, 60), width=2)
 
@@ -652,7 +654,7 @@ class GifGenerator:
         img.save(output, format="PNG")
         return output.getvalue()
 
-@register("CS武器箱开箱模拟", "luooka", "支持武器箱、纪念包、收藏品开箱模拟(带动画)", "1.3.1")
+@register("CS武器箱开箱模拟", "luooka", "支持武器箱、纪念包、收藏品开箱模拟(带动画)", "1.3.2")
 class CasePlugin(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
@@ -680,7 +682,7 @@ class CasePlugin(Star):
         else:
             self.admins = [x.strip() for x in str(raw_admins).replace("，", ",").split(",") if x.strip()]
             
-        print(f"插件加载完成 (v1.3.1)。Config: Number={self.config.get('max_open_per_request', 50)}, Admins={self.admins}")
+        print(f"插件加载完成 (v1.3.2)。Config: Number={self.config.get('max_open_per_request', 50)}, Admins={self.admins}")
 
     def _safe_int(self, value, default, minimum=0):
         try:
@@ -720,6 +722,53 @@ class CasePlugin(Star):
         elif "收藏品" in case_name: return "collection"
         elif any(k in case_name for k in ["胶囊", "涂鸦", "布章"]): return "capsule"
         return "case"
+
+    def _interactive_menu_api_enabled(self):
+        value = self.config.get("enable_react_menu_api", False)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value == 1
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return False
+
+    @staticmethod
+    def _is_aiocqhttp_event(event):
+        get_platform_name = getattr(event, "get_platform_name", None)
+        if callable(get_platform_name):
+            try:
+                platform_name = get_platform_name()
+            except Exception:
+                platform_name = None
+            if platform_name:
+                return str(platform_name).casefold() == "aiocqhttp"
+
+        try:
+            platform_id = event.get_platform_id()
+        except Exception:
+            platform_id = getattr(event, "platform_id", None)
+        return str(platform_id or "").casefold() == "aiocqhttp"
+
+    def _interactive_menu(self):
+        return interactive_menu_api.InteractiveMenuAPI(
+            case_data=self.case_data,
+            identify_container_type=self._identify_container_type,
+            max_open_per_request=self._max_open_per_request(),
+            enabled=self._interactive_menu_api_enabled(),
+        )
+
+    def get_interactive_menu_api_info(self):
+        """Return the public provider identity and availability for the menu plugin."""
+        return interactive_menu_api.get_api_info(self._interactive_menu_api_enabled())
+
+    def get_interactive_menu_page(self, state=None, display_options=None):
+        """Return a menu page from the current case data."""
+        return self._interactive_menu().get_page(state, display_options)
+
+    def handle_interactive_menu_action(self, state, action_id, display_options=None):
+        """Resolve a menu action without executing it."""
+        return self._interactive_menu().handle_action(state, action_id, display_options)
 
     def _get_probability_map(self, items, case_name=""):
         if case_name.endswith("终端机"): return PROB_CATEGORY_15
@@ -849,6 +898,18 @@ class CasePlugin(Star):
         elif msg == "库存":
             async for r in self._show_inventory(event): yield r
         elif msg.startswith("开箱"):
+            if (
+                msg == "开箱"
+                and self._interactive_menu_api_enabled()
+                and self._is_aiocqhttp_event(event)
+            ):
+                if not interactive_menu_api.has_compatible_consumer(self.context):
+                    yield event.plain_result(
+                        "❌ CS2 开箱菜单 API 已开启，但未检测到兼容的表情互动菜单插件。"
+                        "请安装并启用互动菜单插件后重试："
+                        "https://github.com/DearCrazyLeaf/astrbot_plugin_react_menu"
+                    )
+                return
             async for r in self._handle_open(event): yield r
         elif msg.startswith("查询价格"):
             async for r in self._handle_price_query(event): yield r

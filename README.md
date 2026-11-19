@@ -27,6 +27,10 @@
 
 ### ℹ️ 互动菜单 API [@DearCrazyLeaf](https://github.com/DearCrazyLeaf)
 
+**开箱模拟联动效果预览：**
+
+<img width="400" height="960" alt="gif_preview" src="https://github.com/user-attachments/assets/0ca0629b-1cf4-4fd4-bf2d-7d40649e370f" />
+
 在 AstrBot 中安装并启用支持本接口的 [表情互动菜单插件](https://github.com/DearCrazyLeaf/astrbot_plugin_react_menu)，开启 `enable_react_menu_api`，并在菜单插件的全局或对应 UMO 配置中添加「CS2开箱模拟 API 菜单」卡片。
 
 配置后，在 `aiocqhttp` 会话平台发送 `开箱`，由表情互动菜单插件响应并生成托管菜单；主菜单受全局菜单配置影响；进入快速开箱后，仅发起者可按种类、名称和数量选择，支持表情及序号操作；选择数量后菜单保留，方便继续开箱或返回；各页标题、选项文案和数量可在菜单卡片中配置。

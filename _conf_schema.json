@@ -1,4 +1,10 @@
 {
+  "enable_react_menu_api": {
+    "type": "bool",
+    "description": "启用互动菜单 API",
+    "hint": "(https://github.com/DearCrazyLeaf/astrbot_plugin_react_menu) ；仅适用于 aiocqhttp 平台；需要安装并配置表情互动菜单插件；开关默认关闭，关闭时按原有方式使用插件功能，开启时不影响常规指令使用",
+    "default": false
+  },
   "number": {
     "type": "int",
     "description": "显示上限",

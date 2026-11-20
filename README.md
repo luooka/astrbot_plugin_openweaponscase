@@ -23,6 +23,26 @@
 | `api_host` | string | `api.csqaq.com` | 数据源 API 域名（无需加 https://）。 |
 | `api_token` | string | 用来管理价格查询和库存更新使用 | API 认证 Token **(必填，获取方法见下文)**。 |
 | `admins` | string | 武器箱更新权限 | **管理员 QQ 号**。多个管理员请用英文逗号分隔，例如 `12345,67890`。 |
+| `enable_react_menu_api` | bool | `false` | 启用 [表情互动菜单](https://github.com/DearCrazyLeaf/astrbot_plugin_react_menu) 联动，仅适用于 `aiocqhttp` 群聊；关闭时按原有方式处理开箱指令。 |
+
+### ℹ️ 互动菜单 API [@DearCrazyLeaf](https://github.com/DearCrazyLeaf)
+
+* **开箱模拟联动效果预览**：
+
+    > <img width="400" height="960" alt="gif_preview" src="https://github.com/user-attachments/assets/0ca0629b-1cf4-4fd4-bf2d-7d40649e370f" />
+
+- 在 AstrBot 中安装并启用支持本接口的 [表情互动菜单插件](https://github.com/DearCrazyLeaf/astrbot_plugin_react_menu)，开启 `enable_react_menu_api`，并在菜单插件的全局或对应 UMO 配置中添加「CS2开箱模拟 API 菜单」卡片。
+
+- 配置后，在 `aiocqhttp` 会话平台发送 `开箱`，由表情互动菜单插件响应并生成托管菜单；主菜单受全局菜单配置影响；进入快速开箱后，仅发起者可按种类、名称和数量选择，支持表情及序号操作；选择数量后菜单保留，方便继续开箱或返回；各页标题、选项文案和数量可在菜单卡片中配置。
+
+- 关闭开关、使用其他适配器，或发送 `开箱 变革 10` 等带参数的指令时，仍走原生处理逻辑；库存、帮助、武器箱列表及管理操作复用原生指令；每日额度、库存记录、管理员权限及结果生成仍由开箱插件处理。
+
+**这是由 AstrBot 已加载插件实例直接调用的接口，不提供 HTTP 服务，接口标识为 `cs2_openweaponscase`，API 版本为 `1`**
+| API名 | 说明 |
+| :--- | :--- |
+| `get_interactive_menu_api_info()` | 读取接口标识、版本、启用状态和平台信息。 |
+| `get_interactive_menu_page(state=None, display_options=None)` | 返回主菜单、种类、箱子列表或数量页面，或返回错误提示。 |
+| `handle_interactive_menu_action(state, action_id, display_options=None)` | 解析所选动作，返回下一页、取消提示、错误提示或待派发的原生指令。 |
 
 ### 🔑 如何获取 API Token
 
